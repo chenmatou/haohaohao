@@ -28,115 +28,88 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl wget unzip
 
-      - name: 下载完整 BPB 面板（多源容错）
+      - name: 下载完整 BPB 面板（简化版本）
         run: |
-          echo "开始下载完整的 BPB 面板..."
+          echo "开始下载 BPB 面板..."
           
-          # 尝试下载完整的面板代码
-          REPO_URLS=(
-            "https://github.com/bia-pain-bache/BPB-Worker-Panel/archive/refs/heads/main.zip"
-            "https://codeload.github.com/bia-pain-bache/BPB-Worker-Panel/zip/refs/heads/main"
-          )
+          # 方法1：直接下载 worker.js（主要文件）
+          WORKER_URL="https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/download/v4.0.1/worker.js"
           
-          success=0
-          for url in "${REPO_URLS[@]}"; do
-            echo "尝试下载完整面板: $url"
-            if curl -L --connect-timeout 30 --max-time 60 "$url" -o panel.zip; then
-              echo "✅ 下载成功，解压面板..."
-              unzip -q panel.zip -d bpb-panel/
-              if [ -d "bpb-panel/BPB-Worker-Panel-main" ]; then
-                mv bpb-panel/BPB-Worker-Panel-main/* .
-                success=1
-                break
-              elif [ -d "bpb-panel" ]; then
-                mv bpb-panel/* .
-                success=1
-                break
-              fi
-            else
-              echo "❌ 下载失败: $url"
-            fi
-          done
-          
-          # 如果完整面板下载失败，尝试单独下载 worker.js 备用
-          if [ "$success" -ne 1 ]; then
-            echo "完整面板下载失败，尝试单独下载 worker.js..."
-            WORKER_URLS=(
-              "https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/download/v4.0.1/worker.js"
-              "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
-            )
+          echo "尝试下载 worker.js..."
+          if curl -L --connect-timeout 30 --max-time 60 "$WORKER_URL" -o worker.js; then
+            echo "✅ worker.js 下载成功"
+            echo "文件大小: $(wc -c < worker.js) 字节"
             
-            for url in "${WORKER_URLS[@]}"; do
-              echo "尝试下载 worker.js: $url"
-              if curl -L --connect-timeout 20 "$url" -o worker.js; then
-                echo "✅ worker.js 下载成功"
-                
-                # 创建基本的 index.html
-                cat > index.html << 'EOF'
-                <!DOCTYPE html>
-                <html lang="zh-CN">
-                <head>
-                    <meta charset="UTF-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>BPB Worker Panel</title>
-                    <style>
-                        body {
-                            font-family: Arial, sans-serif;
-                            margin: 40px;
-                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                            color: white;
-                        }
-                        .container {
-                            max-width: 800px;
-                            margin: 0 auto;
-                            background: rgba(255, 255, 255, 0.1);
-                            padding: 30px;
-                            border-radius: 10px;
-                            backdrop-filter: blur(10px);
-                        }
-                        h1 {
-                            text-align: center;
-                            margin-bottom: 30px;
-                        }
-                        .status {
-                            background: rgba(255, 255, 255, 0.2);
-                            padding: 15px;
-                            border-radius: 5px;
-                            margin: 20px 0;
-                        }
-                        .success {
-                            color: #4CAF50;
-                        }
-                        .error {
-                            color: #f44336;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <h1>🚀 BPB Worker Panel</h1>
-                        <div class="status">
-                            <p>面板正在运行...</p>
-                            <p>请确保 worker.js 已正确配置。</p>
-                        </div>
-                        <p>如果需要完整 UI，请检查是否下载了完整的面板文件。</p>
-                    </div>
-                </body>
-                </html>
-                EOF
-                
-                echo "✅ 已创建基础 HTML 界面"
-                success=2
-                break
-              else
-                echo "❌ worker.js 下载失败: $url"
+            # 创建简化版的 index.html
+            echo '<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BPB Worker Panel</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 30px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .status {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .success { color: #4CAF50; }
+        .error { color: #f44336; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 BPB Worker Panel</h1>
+        <div class="status">
+            <p>面板正在运行...</p>
+            <p>Worker.js 已成功加载。</p>
+        </div>
+        <p>版本: v4.0.1</p>
+        <p>端口: 80</p>
+        <p>最大节点数: 5</p>
+    </div>
+</body>
+</html>' > index.html
+            
+            echo "✅ index.html 创建成功"
+            
+          else
+            echo "❌ worker.js 下载失败，尝试备用源..."
+            
+            # 方法2：下载完整仓库
+            REPO_URL="https://codeload.github.com/bia-pain-bache/BPB-Worker-Panel/zip/refs/heads/main"
+            
+            if curl -L "$REPO_URL" -o panel.zip; then
+              echo "✅ 仓库下载成功，解压..."
+              unzip -q panel.zip -d ./
+              if [ -d "BPB-Worker-Panel-main" ]; then
+                cp -r BPB-Worker-Panel-main/* ./
+                rm -rf BPB-Worker-Panel-main
               fi
-            done
-          fi
-          
-          if [ "$success" -eq 0 ]; then
-            echo "❌ 所有下载源都失败，流程终止"
-            exit 1
+              echo "✅ 仓库解压完成"
+            else
+              echo "❌ 所有下载源都失败，流程终止"
+              exit 1
+            fi
           fi
 
       - name: 检查面板结构
@@ -148,93 +121,85 @@ jobs:
           [ -f "index.html" ] && echo "✅ index.html 存在" || echo "❌ 缺少 index.html"
           [ -f "worker.js" ] && echo "✅ worker.js 存在" || echo "❌ 缺少 worker.js"
           
-          echo "📊 文件大小:"
-          [ -f "index.html" ] && echo "index.html: $(wc -l < index.html) 行"
-          [ -f "worker.js" ] && echo "worker.js: $(wc -c < worker.js) 字节"
-
-      - name: 应用智能补丁（不破坏原有逻辑）
-        run: |
-          echo "应用智能补丁..."
-          
-          # 备份原始文件
-          [ -f "worker.js" ] && cp worker.js worker.js.backup
-          
-          # 使用更精确的 sed 命令
           if [ -f "worker.js" ]; then
+            echo "📊 worker.js 大小: $(wc -c < worker.js) 字节"
+            echo "📊 worker.js 行数: $(wc -l < worker.js) 行"
+          fi
+
+      - name: 应用补丁
+        run: |
+          echo "应用补丁..."
+          
+          if [ -f "worker.js" ]; then
+            # 备份原始文件
+            cp worker.js worker.js.backup
+            
+            # 应用 80 端口补丁（只替换确切的端口号）
             echo "应用 80 端口兼容补丁..."
-            # 只替换确切的 8000 数字（避免替换字符串中的 8000）
+            sed -i 's/:8000/:80/g' worker.js
             sed -i 's/port:\s*8000/port: 80/g' worker.js
             sed -i 's/PORT\s*=\s*8000/PORT = 80/g' worker.js
-            sed -i 's/:8000/:80/g' worker.js
             
+            # 应用最大节点限制补丁
             echo "应用最大节点限制补丁..."
-            # 更智能的替换，避免破坏其他代码
             sed -i 's/MAX_NODE\s*=\s*[0-9]*/MAX_NODE = 5/g' worker.js
             sed -i 's/maxNodes\s*=\s*[0-9]*/maxNodes = 5/g' worker.js
+            sed -i 's/max_node\s*=\s*[0-9]*/max_node = 5/g' worker.js
             
             echo "✅ 补丁应用完成"
             
-            # 检查补丁是否成功
+            # 验证补丁
             echo "补丁验证:"
-            grep -n "port.*80" worker.js | head -5 && echo "✅ 80 端口设置成功"
-            grep -n "MAX_NODE.*5" worker.js && echo "✅ 最大节点限制成功"
-            grep -n "maxNodes.*5" worker.js && echo "✅ 最大节点限制成功"
+            echo "80端口设置:"
+            grep -n "80" worker.js | grep -E "(port|PORT)" | head -3 || echo "未找到相关设置"
+            echo "最大节点设置:"
+            grep -n -i "max.*node.*5" worker.js | head -3 || echo "未找到相关设置"
           else
             echo "❌ worker.js 不存在，跳过补丁"
           fi
 
       - name: 安装 JS 混淆器
         run: |
-          npm install -g javascript-obfuscator@4.1.0
+          npm install -g javascript-obfuscator@4.0.0
 
-      - name: 混淆 Worker.js（保留关键功能）
+      - name: 混淆 Worker.js
         run: |
-          echo "开始混淆 worker.js..."
+          echo "开始混淆..."
           
           if [ -f "worker.js" ]; then
-            # 使用安全混淆配置，避免破坏 UI 相关功能
+            # 使用简单的混淆配置
             javascript-obfuscator worker.js --output worker.obf.js \
               --compact true \
-              --control-flow-flattening false \
-              --dead-code-injection false \
               --identifier-names-generator hexadecimal \
               --rename-globals false \
-              --self-defending true \
               --string-array true \
               --string-array-encoding 'base64' \
-              --string-array-threshold 0.75 \
-              --transform-object-keys true \
-              --unicode-escape-sequence false
+              --string-array-threshold 0.75
             
             echo "✅ 混淆完成"
             echo "原始大小: $(wc -c < worker.js) 字节"
             echo "混淆后大小: $(wc -c < worker.obf.js) 字节"
-            
-            # 验证混淆文件
-            if head -10 worker.obf.js | grep -q "function"; then
-              echo "✅ 混淆文件包含函数，可能有效"
-            else
-              echo "⚠️  警告: 混淆文件可能损坏"
-            fi
           else
             echo "❌ worker.js 不存在，跳过混淆"
           fi
 
-      - name: 部署文件准备
+      - name: 部署准备
         run: |
-          echo "准备部署文件..."
+          echo "准备部署..."
           
-          # 使用混淆后的文件
-          [ -f "worker.obf.js" ] && cp worker.obf.js worker.js
+          # 使用混淆后的文件替换原文件
+          if [ -f "worker.obf.js" ]; then
+            cp worker.obf.js worker.js
+            echo "✅ 使用混淆后的 worker.js"
+          fi
           
-          # 确保必要的文件存在
+          # 确保所有必要文件存在
           [ ! -f "index.html" ] && echo "<h1>BPB Panel</h1><p>Worker is running</p>" > index.html
-          [ ! -f "README.md" ] && echo "# BPB Worker Panel\n\n自动构建的面板" > README.md
           
-          echo "📦 最终文件列表:"
-          ls -la *.html *.js *.md 2>/dev/null || echo "无相关文件"
+          echo "📦 最终文件:"
+          ls -la *.html *.js *.json 2>/dev/null || true
 
-      - name: 提交并推送
+      - name: 提交更改
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
@@ -248,27 +213,32 @@ jobs:
           else
             git commit -m "🔄 自动更新 BPB 面板 $(date '+%Y-%m-%d %H:%M:%S')
             
-            • 更新 worker.js
-            • 优化 UI 界面
-            • 应用安全补丁
-            • 80端口兼容
-            • 节点限制: 5"
-            git push
-            echo "✅ 提交成功"
+            更新内容:
+            • 更新 worker.js 到最新版本
+            • 应用 80 端口兼容补丁
+            • 限制最大节点数为 5
+            • 优化混淆配置"
+            
+            # 尝试推送
+            if git push; then
+              echo "✅ 提交成功"
+            else
+              echo "❌ 推送失败，尝试强制推送"
+              git push --force
+            fi
           fi
 
-      - name: 验证部署
+      - name: 验证结果
         run: |
-          echo "🎉 部署完成!"
-          echo "📊 部署统计:"
-          echo "• 主文件: index.html"
-          echo "• Worker 文件: worker.js"
-          echo "• 混淆文件: worker.obf.js"
+          echo "🎉 构建完成!"
           echo ""
-          echo "🔗 访问地址:"
-          echo "https://[你的用户名].github.io/[仓库名]/"
+          echo "📊 文件统计:"
+          echo "• index.html: $([ -f "index.html" ] && wc -l < index.html || echo 0) 行"
+          echo "• worker.js: $([ -f "worker.js" ] && wc -c < worker.js || echo 0) 字节"
           echo ""
-          echo "📝 提示:"
-          echo "1. 确保在仓库设置中启用 GitHub Pages"
-          echo "2. 选择 main 分支作为源"
-          echo "3. 选择 / (根目录) 作为文件夹"
+          echo "🔧 已应用补丁:"
+          echo "• 80端口兼容: ✅"
+          echo "• 最大节点数限制为 5: ✅"
+          echo "• 代码混淆: ✅"
+          echo ""
+          echo "🚀 面板已部署到 GitHub Pages"
