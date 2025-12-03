@@ -1,93 +1,401 @@
-name: Build and Obfuscate BPB Panel
+// stable-worker.js
+// 完整版：BPB Worker 稳定增强版（节点限5、真连接检测、持久首选节点、回退策略）
+// 可直接部署到 Cloudflare Worker，兼容 javascript-obfuscator 混淆
 
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
+addEventListener("fetch", event => {
+  event.respondWith(handleRequest(event.request));
+});
 
-jobs:
-  build_and_obfuscate:
-    runs-on: ubuntu-latest
+// ========================================================
+// CONFIGURATION - 请根据实际环境调整以下常量（可留空使用默认）
+// ========================================================
+const NODE_LIST = [
+  // 把你的真实节点地址放这里（HTTP/HTTPS 可访问地址）
+  // 格式示例: "https://upstream1.example.com/proxy", "https://upstream2.example.com/proxy"
+  // 最好预先只填写 1~8 个候选节点，系统会限制并筛选到最多 5 个可用节点
+  // 示例占位（请替换为实际节点）
+  "https://upstream-node-1.example.com/",
+  "https://upstream-node-2.example.com/",
+  "https://upstream-node-3.example.com/",
+  "https://upstream-node-4.example.com/",
+  "https://upstream-node-5.example.com/",
+  "https://upstream-node-6.example.com?"
+];
 
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v3
+const MAX_NODES = 5;                // 最多保留节点数量（严格上限）
+const REQUIRED_TESTS = 3;           // 每个节点至少做 N 次真连接测试以判断稳定性
+const CHECK_TIMEOUT_MS = 5000;      // 单次真连接超时（ms）
+const MAX_ACCEPTABLE_LATENCY = 150; // 可接受的最大延迟（ms）
+const KEEPALIVE_INTERVAL_MS = 10000;// 心跳间隔，防止 CF 回收
+const PREFERRED_STALE_MS = 60_000;  // 首选节点在多长时间内被视为“新鲜”（ms）
+const RETRY_ON_FAIL = 2;            // 代理请求失败后，重试次数（会尝试其它可用节点）
 
-      - name: 设置 Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: "18"
+// ========================================================
+// RUNTIME STATE (持久于 Worker 实例的内存) - 非持久化到 KV
+// ========================================================
+globalThis.__KEEPALIVE__ = globalThis.__KEEPALIVE__ || setInterval(() => {}, KEEPALIVE_INTERVAL_MS);
 
-      - name: 安装 javascript-obfuscator
-        run: |
-          npm install -g javascript-obfuscator
+const RuntimeState = {
+  // nodes: [{ id, url, lastTestedAt, avgLatency, stable, score }]
+  nodes: [],
+  // bestNode: { id, url, lastSelectedAt, failureCount }
+  bestNode: null,
+  // stats
+  stats: {
+    totalChecks: 0,
+    successfulChecks: 0,
+    failedChecks: 0
+  }
+};
 
-      - name: 下载 BPB worker.js（使用 Releases 地址）
-        run: |
-          # 主要下载URL - 使用 GitHub Releases（v4.0.1）
-          PRIMARY_URL="https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/download/v4.0.1/worker.js"
-          
-          # 备用URL列表（保持不变）
-          FALLBACK_URLS=(
-            "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
-            "https://cdn.jsdelivr.net/gh/bia-pain-bache/BPB-Worker-Panel@main/build/unobfuscated-worker.js"
-            "https://ghproxy.com/https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
-          )
-          
-          echo "开始下载BPB worker.js文件..."
-          
-          # 尝试主URL（Releases地址）
-          if wget -O origin.js "$PRIMARY_URL"; then
-            echo "✅ Releases URL下载成功"
-          else
-            echo "Releases URL下载失败，尝试备用URL..."
-            
-            SUCCESS=false
-            for url in "${FALLBACK_URLS[@]}"; do
-              echo "尝试下载: $url"
-              if wget -O origin.js "$url"; then
-                echo "✅ 备用URL下载成功: $url"
-                SUCCESS=true
-                break
-              else
-                echo "❌ 下载失败: $url"
-              fi
-            done
-            
-            if [ "$SUCCESS" = false ] || [ ! -f origin.js ] || [ ! -s origin.js ]; then
-              echo "❌ 所有下载源均失败，请检查网络或URL有效性"
-              exit 1
-            fi
-          fi
-          
-          echo "下载完成，文件大小: $(wc -c < origin.js) 字节"
+// ========================================================
+// UTILITIES
+// ========================================================
+function now() { return Date.now(); }
 
-      - name: 复制 worker.js 到项目目录
-        run: |
-          mkdir -p build
-          cp origin.js build/unobfuscated-worker.js
+function safeLog(...args) {
+  // 在生产中可以注释掉以减少日志
+  try { console.log(...args); } catch (e) {}
+}
 
-      - name: 混淆 worker.js
-        run: |
-          javascript-obfuscator build/unobfuscated-worker.js \
-            --output build/worker.obf.js \
-            --compact true \
-            --control-flow-flattening true \
-            --dead-code-injection true \
-            --debug-protection false \
-            --disable-console-output true \
-            --identifier-names-generator hexadecimal \
-            --simplify true \
-            --split-strings true \
-            --string-array true \
-            --string-array-encoding rc4 \
-            --string-array-threshold 1
+// 简单 uuid 生成（用于节点 id）
+function uidFromUrl(url) {
+  // 简化版 id：取地址的 hash-like
+  let s = 0;
+  for (let i = 0; i < url.length; i++) {
+    s = ((s << 5) - s) + url.charCodeAt(i);
+    s |= 0;
+  }
+  return 'n' + (Math.abs(s) % 1000000);
+}
 
-      - name: 提交混淆后的 worker.js
-        run: |
-          git config --local user.email "github-actions@github.com"
-          git config --local user.name "GitHub Actions"
-          git add build/worker.obf.js
-          git commit -m "Auto-obfuscate worker.js"
-          git push || echo "无需推送，可能没有变更"
+// 超时 fetch（HEAD 请求用于连通性检测）
+async function fetchWithTimeout(resource, options = {}) {
+  const { timeout = CHECK_TIMEOUT_MS } = options;
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const resp = await fetch(resource, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return resp;
+  } catch (err) {
+    clearTimeout(id);
+    throw err;
+  }
+}
+
+// 计算节点评分（延迟越低得分越高）
+function computeScore(latency, avgLatency) {
+  const latencyScore = Math.max(0, 100 - latency); // 0-100
+  const stabilityBonus = (Math.abs(latency - avgLatency) < 20) ? 20 : 0;
+  return latencyScore + stabilityBonus;
+}
+
+// ========================================================
+// NODE INITIALIZATION & HEALTH CHECKS
+// ========================================================
+
+// 初始化候选节点（限制数量、包装元数据）
+// 不会直接替换原来你的“nodeList”变量，让它与原逻辑保持兼容
+function initializeCandidates(rawList) {
+  const unique = [];
+  const seen = new Set();
+  for (const u of rawList) {
+    if (!u || typeof u !== 'string') continue;
+    const trimmed = u.trim();
+    if (!trimmed) continue;
+    if (seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    unique.push(trimmed);
+    if (unique.length >= Math.max(8, MAX_NODES)) break; // 取不超过 8 以便筛选
+  }
+
+  return unique.slice(0, Math.max(MAX_NODES, unique.length)).map(url => ({
+    id: uidFromUrl(url),
+    url,
+    lastTestedAt: 0,
+    avgLatency: null,
+    stable: false,
+    score: 0
+  }));
+}
+
+// 真连接检测：HEAD 请求为主（若 HEAD 不支持，则 GET 的轻量请求）
+// 返回 { healthy: boolean, latency: number, status: number|null, error: string|null }
+async function verifyRealConnection(nodeUrl) {
+  const start = now();
+  try {
+    // 尽量使用 HEAD 避免下载主体
+    let resp;
+    try {
+      resp = await fetchWithTimeout(nodeUrl, { method: 'HEAD', redirect: 'follow' });
+    } catch (e) {
+      // 如果 HEAD 抛错（很多 endpoint 不支持），尝试 GET 但不读取 body
+      resp = await fetchWithTimeout(nodeUrl, { method: 'GET', redirect: 'follow' });
+    }
+    const latency = now() - start;
+    const status = resp && resp.status ? resp.status : 0;
+    // 验证条件：状态码 < 400（可选）；延迟在合理范围
+    const healthy = (status < 400) && (latency >= 1 && latency <= MAX_ACCEPTABLE_LATENCY);
+    return { healthy, latency, status, error: null };
+  } catch (err) {
+    return { healthy: false, latency: null, status: null, error: err && err.name ? err.name : String(err) };
+  }
+}
+
+// 对单节点进行稳定性测试（多次检测，保证稳定）
+async function testNodeStability(node) {
+  const results = [];
+  for (let i = 0; i < REQUIRED_TESTS; i++) {
+    const r = await verifyRealConnection(node.url);
+    results.push(r);
+    if (!r.healthy) {
+      // 早停：一次失败则判定不稳定
+      return { stable: false, attempt: i + 1, reason: r.error || 'failed' };
+    }
+    // 小间隔，避免短时限速或突发网络延迟影响
+    await new Promise(res => setTimeout(res, 200));
+  }
+  const avgLatency = Math.round(results.reduce((s, x) => s + x.latency, 0) / results.length);
+  return { stable: true, attempts: REQUIRED_TESTS, avgLatency, successRate: 1.0 };
+}
+
+// 执行批量健康检查（只检查前 MAX_NODES 个候选）
+async function checkAllCandidates(candidates) {
+  safeLog('开始节点批量健康检查，候选数：', candidates.length);
+  const limited = candidates.slice(0, MAX_NODES);
+  const healthyNodes = [];
+
+  for (const cand of limited) {
+    const stability = await testNodeStability(cand);
+    cand.lastTestedAt = now();
+    if (stability.stable) {
+      // 再做一次最终轻量检测确认延迟
+      const final = await verifyRealConnection(cand.url);
+      if (final.healthy) {
+        cand.avgLatency = stability.avgLatency;
+        cand.stable = true;
+        cand.score = computeScore(final.latency, stability.avgLatency);
+        healthyNodes.push(cand);
+        RuntimeState.stats.successfulChecks++;
+      } else {
+        cand.stable = false;
+        RuntimeState.stats.failedChecks++;
+      }
+    } else {
+      cand.stable = false;
+      RuntimeState.stats.failedChecks++;
+    }
+    RuntimeState.stats.totalChecks++;
+  }
+
+  // 按分数降序排序
+  healthyNodes.sort((a, b) => b.score - a.score);
+  safeLog('健康节点筛选完成，可用数：', healthyNodes.length);
+  return healthyNodes;
+}
+
+// 选择首选节点（持久化策略）：
+// - 如果已有 bestNode 且最近仍然可用且新鲜，则继续使用
+// - 否则选择健康节点列表中的得分最高者并记录为 bestNode
+async function selectBestNode(healthyNodes) {
+  const nowTs = now();
+  if (RuntimeState.bestNode) {
+    // 如果 bestNode 在健康节点里并且最近使用时间未超过 PREFERRED_STALE_MS，则保留
+    const existing = healthyNodes.find(n => n.id === RuntimeState.bestNode.id);
+    if (existing && (nowTs - (RuntimeState.bestNode.lastSelectedAt || 0) < PREFERRED_STALE_MS)) {
+      // 更新 lastSelectedAt
+      RuntimeState.bestNode.lastSelectedAt = nowTs;
+      safeLog('保留当前首选节点：', RuntimeState.bestNode.url);
+      return RuntimeState.bestNode;
+    }
+  }
+
+  if (healthyNodes.length === 0) {
+    RuntimeState.bestNode = null;
+    return null;
+  }
+
+  // 选择分最高的
+  const chosen = {
+    id: healthyNodes[0].id,
+    url: healthyNodes[0].url,
+    lastSelectedAt: nowTs,
+    failureCount: 0
+  };
+  RuntimeState.bestNode = chosen;
+  safeLog('更新首选节点为：', chosen.url);
+  return chosen;
+}
+
+// 对节点池执行初始化（供第一次请求或节点变更时调用）
+async function initializeNodePool(rawList) {
+  try {
+    const candidates = initializeCandidates(rawList);
+    RuntimeState.nodes = candidates;
+    const healthyNodes = await checkAllCandidates(candidates);
+    // 将健康节点信息存入 RuntimeState.nodes（保留原候选的结构）
+    RuntimeState.nodes = healthyNodes.map(h => ({ ...h }));
+    await selectBestNode(RuntimeState.nodes);
+  } catch (err) {
+    safeLog('initializeNodePool 异常：', err);
+    RuntimeState.nodes = [];
+    RuntimeState.bestNode = null;
+  }
+}
+
+// ========================================================
+// PROXY / ROUTING LOGIC
+// ========================================================
+
+// 代理请求到首选节点（带重试逻辑）
+async function proxyRequestToNodes(request, maxRetries = RETRY_ON_FAIL) {
+  // 确保节点池初始化
+  if (!RuntimeState.nodes || RuntimeState.nodes.length === 0) {
+    await initializeNodePool(NODE_LIST);
+  }
+
+  let attempt = 0;
+  const tried = new Set();
+
+  while (attempt <= maxRetries) {
+    const candidate = RuntimeState.bestNode ? RuntimeState.bestNode : (RuntimeState.nodes && RuntimeState.nodes.length ? { id: RuntimeState.nodes[0].id, url: RuntimeState.nodes[0].url } : null);
+    if (!candidate) {
+      return new Response('No upstream node available', { status: 503 });
+    }
+
+    // 避免重复尝试同一个节点在同一请求中
+    if (tried.has(candidate.id)) {
+      // pick next fallback from nodes list
+      const fallback = RuntimeState.nodes.find(n => !tried.has(n.id));
+      if (fallback) {
+        candidate.id = fallback.id;
+        candidate.url = fallback.url;
+      } else {
+        // 无更多候选，直接返回错误
+        return new Response('All upstream nodes attempted and failed', { status: 502 });
+      }
+    }
+
+    tried.add(candidate.id);
+
+    try {
+      // 构造目标请求：将路径按需拼接或转发原始请求
+      const targetUrl = new URL(candidate.url);
+      // 保持原始请求的路径和查询参数（如果 upstream 是基础域）
+      const originUrl = new URL(request.url);
+      // 如果 candidate.url 看起来是完整代理路径（包含查询/路径），我们直接使用它
+      // 否则拼接 origin 的 path 和 query 到 candidate.url
+      let finalUrl;
+      try {
+        // 如果 candidate.url 是以 / 结尾或看起来是基础域，则拼接原始 path
+        if (candidate.url.endsWith('/')) {
+          finalUrl = new URL(candidate.url + originUrl.pathname.replace(/^\//, '') + (originUrl.search || ''));
+        } else {
+          // 检查 candidate.url 是否包含完整路径（有 '?' 或 path）
+          finalUrl = new URL(candidate.url);
+          // 如果 candidate 指向纯域名（没有 path），拼接原 path
+          if (!finalUrl.pathname || finalUrl.pathname === '/') {
+            finalUrl = new URL(candidate.url + originUrl.pathname + (originUrl.search || ''));
+          }
+        }
+      } catch (e) {
+        // 兜底：直接使用 candidate.url
+        finalUrl = new URL(candidate.url);
+      }
+
+      // 复制请求头，剔除一些禁止头
+      const headers = new Headers(request.headers);
+      headers.set('x-forwarded-for', request.headers.get('cf-connecting-ip') || '');
+      headers.set('x-forwarded-host', request.headers.get('host') || '');
+      // 移除可能导致 CORS 或 upstream 拒绝的头（可酌情调整）
+      headers.delete('origin');
+
+      const fetchOptions = {
+        method: request.method,
+        headers,
+        redirect: 'follow',
+        body: (request.method !== 'GET' && request.method !== 'HEAD') ? request.body : undefined
+      };
+
+      const resp = await fetchWithTimeout(finalUrl.toString(), fetchOptions);
+      // 成功则返回 upstream 的响应（保持状态与 body）
+      const respHeaders = new Headers(resp.headers);
+      // 可选择清理敏感或不必要的 header
+      return new Response(resp.body, { status: resp.status, headers: respHeaders });
+    } catch (err) {
+      safeLog(`代理到节点 ${candidate.url} 失败：`, err && err.message ? err.message : err);
+      // 增加失败计数，若超过阈值则标记节点不稳定并尝试重新初始化池
+      if (RuntimeState.bestNode && RuntimeState.bestNode.id === candidate.id) {
+        RuntimeState.bestNode.failureCount = (RuntimeState.bestNode.failureCount || 0) + 1;
+        if (RuntimeState.bestNode.failureCount >= 2) {
+          safeLog('首选节点连续失败，清除并重新选择节点池');
+          // 将该节点从 pool 移除，重新检测节点池
+          RuntimeState.nodes = (RuntimeState.nodes || []).filter(n => n.id !== candidate.id);
+          RuntimeState.bestNode = null;
+          // 重新尝试初始化节点池（尽量异步完成）
+          try { await initializeNodePool(NODE_LIST); } catch (e) { safeLog('重新初始化节点池失败：', e); }
+        }
+      }
+      // 继续尝试其它节点
+      attempt++;
+    }
+  } // while
+
+  return new Response('Upstream proxy failed after retries', { status: 502 });
+}
+
+// ========================================================
+// ENTRY POINT： handleRequest
+// ========================================================
+async function handleRequest(request) {
+  // 健康检查路由（可选）
+  const url = new URL(request.url);
+  if (url.pathname === '/__bp_health') {
+    // 返回节点状态（不暴露敏感信息）
+    const summary = {
+      timestamp: now(),
+      nodes: (RuntimeState.nodes || []).map(n => ({ id: n.id, url: n.url, stable: !!n.stable, avgLatency: n.avgLatency, score: n.score })),
+      bestNode: RuntimeState.bestNode ? { id: RuntimeState.bestNode.id, url: RuntimeState.bestNode.url, lastSelectedAt: RuntimeState.bestNode.lastSelectedAt } : null,
+      stats: RuntimeState.stats
+    };
+    return new Response(JSON.stringify(summary, null, 2), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+
+  // 若尚未初始化节点池，初始化（非阻塞初始化也可，但首次请求尽量等待完成）
+  if (!RuntimeState.nodes || RuntimeState.nodes.length === 0) {
+    await initializeNodePool(NODE_LIST);
+  }
+
+  // 代理逻辑：默认将所有非健康检查请求转发到 upstream 节点
+  try {
+    return await proxyRequestToNodes(request);
+  } catch (err) {
+    safeLog('handleRequest 未捕获异常：', err);
+    return new Response('Internal error', { status: 500 });
+  }
+}
+
+// ========================================================
+// 导出（仅便于测试/调试，这在 CF Worker 中无实际影响）
+// ========================================================
+if (typeof globalThis !== 'undefined') {
+  globalThis.__BPB_STABLE_RUNTIME__ = {
+    config: {
+      NODE_LIST,
+      MAX_NODES,
+      REQUIRED_TESTS,
+      CHECK_TIMEOUT_MS,
+      MAX_ACCEPTABLE_LATENCY
+    },
+    state: RuntimeState,
+    helpers: {
+      initializeNodePool,
+      initializeCandidates,
+      verifyRealConnection,
+      testNodeStability,
+      checkAllCandidates,
+      selectBestNode
+    }
+  };
+}
