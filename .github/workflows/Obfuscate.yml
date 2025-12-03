@@ -40,55 +40,8 @@ jobs:
             echo "✅ worker.js 下载成功"
             echo "文件大小: $(wc -c < worker.js) 字节"
             
-            # 创建简化版的 index.html
-            echo '<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BPB Worker Panel</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 40px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            background: rgba(255, 255, 255, 0.1);
-            padding: 30px;
-            border-radius: 10px;
-            backdrop-filter: blur(10px);
-        }
-        h1 {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        .status {
-            background: rgba(255, 255, 255, 0.2);
-            padding: 15px;
-            border-radius: 5px;
-            margin: 20px 0;
-        }
-        .success { color: #4CAF50; }
-        .error { color: #f44336; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🚀 BPB Worker Panel</h1>
-        <div class="status">
-            <p>面板正在运行...</p>
-            <p>Worker.js 已成功加载。</p>
-        </div>
-        <p>版本: v4.0.1</p>
-        <p>端口: 80</p>
-        <p>最大节点数: 5</p>
-    </div>
-</body>
-</html>' > index.html
+            # 创建简化版的 index.html - 使用单个 echo 命令
+            echo '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>BPB Worker Panel</title><style>body{font-family:Arial,sans-serif;margin:40px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;}.container{max-width:800px;margin:0 auto;background:rgba(255,255,255,0.1);padding:30px;border-radius:10px;backdrop-filter:blur(10px);}h1{text-align:center;margin-bottom:30px;}.status{background:rgba(255,255,255,0.2);padding:15px;border-radius:5px;margin:20px 0;}.success{color:#4CAF50;}.error{color:#f44336;}</style></head><body><div class="container"><h1>🚀 BPB Worker Panel</h1><div class="status"><p>面板正在运行...</p><p>Worker.js 已成功加载。</p></div><p>版本: v4.0.1</p><p>端口: 80</p><p>最大节点数: 5</p></div></body></html>' > index.html
             
             echo "✅ index.html 创建成功"
             
@@ -134,7 +87,7 @@ jobs:
             # 备份原始文件
             cp worker.js worker.js.backup
             
-            # 应用 80 端口补丁（只替换确切的端口号）
+            # 应用 80 端口补丁
             echo "应用 80 端口兼容补丁..."
             sed -i 's/:8000/:80/g' worker.js
             sed -i 's/port:\s*8000/port: 80/g' worker.js
@@ -211,13 +164,12 @@ jobs:
           if git diff --cached --quiet; then
             echo "没有变更需要提交"
           else
-            git commit -m "🔄 自动更新 BPB 面板 $(date '+%Y-%m-%d %H:%M:%S')
-            
-            更新内容:
-            • 更新 worker.js 到最新版本
-            • 应用 80 端口兼容补丁
-            • 限制最大节点数为 5
-            • 优化混淆配置"
+            git commit -m "🔄 自动更新 BPB 面板 $(date '+%Y-%m-%d %H:%M:%S')"
+            git commit -m "更新内容:"
+            git commit -m "• 更新 worker.js 到最新版本"
+            git commit -m "• 应用 80 端口兼容补丁"
+            git commit -m "• 限制最大节点数为 5"
+            git commit -m "• 优化混淆配置"
             
             # 尝试推送
             if git push; then
