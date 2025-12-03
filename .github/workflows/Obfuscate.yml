@@ -4,188 +4,90 @@ on:
   push:
     branches:
       - main
-  schedule:
-    - cron: "0 1 * * *"
-
-permissions:
-  contents: write
+  workflow_dispatch:
 
 jobs:
-  build:
+  build_and_obfuscate:
     runs-on: ubuntu-latest
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      - name: 设置 Node.js 环境
-        uses: actions/setup-node@v4
+      - name: 设置 Node.js
+        uses: actions/setup-node@v3
         with:
-          node-version: "18.x"
+          node-version: "18"
 
-      - name: 安装依赖项
+      - name: 安装 javascript-obfuscator
         run: |
-          npm install -g javascript-obfuscator@4.1.0
+          npm install -g javascript-obfuscator
 
       - name: 下载 BPB worker.js（使用 Releases 地址）
         run: |
-          PRIMARY_URL="https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/download/v4.0.0/worker.js"
+          # 主要下载URL - 使用 GitHub Releases（v4.0.1）
+          PRIMARY_URL="https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/download/v4.0.1/worker.js"
+          
+          # 备用URL列表（保持不变）
           FALLBACK_URLS=(
             "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
             "https://cdn.jsdelivr.net/gh/bia-pain-bache/BPB-Worker-Panel@main/build/unobfuscated-worker.js"
             "https://ghproxy.com/https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
           )
-
+          
           echo "开始下载BPB worker.js文件..."
-          if wget -fL -O origin.js "$PRIMARY_URL"; then
+          
+          # 尝试主URL（Releases地址）
+          if wget -O origin.js "$PRIMARY_URL"; then
             echo "✅ Releases URL下载成功"
           else
             echo "Releases URL下载失败，尝试备用URL..."
+            
             SUCCESS=false
             for url in "${FALLBACK_URLS[@]}"; do
               echo "尝试下载: $url"
-              if wget -fL -O origin.js "$url"; then
+              if wget -O origin.js "$url"; then
                 echo "✅ 备用URL下载成功: $url"
                 SUCCESS=true
                 break
+              else
+                echo "❌ 下载失败: $url"
               fi
             done
+            
             if [ "$SUCCESS" = false ] || [ ! -f origin.js ] || [ ! -s origin.js ]; then
               echo "❌ 所有下载源均失败，请检查网络或URL有效性"
               exit 1
             fi
           fi
+          
           echo "下载完成，文件大小: $(wc -c < origin.js) 字节"
 
-      - name: 注入节点健康检查补丁（真连接+稳定+限制5节点）
+      - name: 复制 worker.js 到项目目录
         run: |
-          echo "正在注入节点健康检查补丁..."
-          
-          cat > health_patch.js << 'EOF'
-          // ====== 节点健康检查补丁 ======
-          (function() {
-            'use strict';
+          mkdir -p build
+          cp origin.js build/unobfuscated-worker.js
 
-            const MAX_NODES = 5; // 限制节点数量
-
-            const HEALTH_CONFIG = {
-              STABILITY: 1.0,
-              MAX_LATENCY: 150,
-              CHECK_TIMEOUT: 5000,
-              REQUIRED_TESTS: 3
-            };
-
-            class NodeHealthChecker {
-              constructor() {
-                this.healthyNodes = new Map();
-                this.unhealthyNodes = new Set();
-                this.stats = { totalChecks:0, successfulChecks:0, failedChecks:0 };
-              }
-
-              async verifyRealConnection(node) {
-                const startTime = Date.now();
-                try {
-                  const controller = new AbortController();
-                  const timeoutId = setTimeout(() => controller.abort(), HEALTH_CONFIG.CHECK_TIMEOUT);
-                  const response = await fetch(node.url, {
-                    method: 'HEAD',
-                    mode: 'no-cors',
-                    signal: controller.signal,
-                    headers: {'User-Agent':'Mozilla/5.0 (NodeHealthChecker)','Cache-Control':'no-cache'}
-                  });
-                  clearTimeout(timeoutId);
-                  const latency = Date.now() - startTime;
-                  const isValid = this.validateResponse(response, latency);
-                  return { healthy: isValid, latency, timestamp: Date.now(), status: response.status||0 };
-                } catch (error) {
-                  return { healthy:false, latency:null, timestamp:Date.now(), error:error.message };
-                }
-              }
-
-              validateResponse(response, latency) {
-                if (latency > HEALTH_CONFIG.MAX_LATENCY) return false;
-                if (latency < 1) return false;
-                if (response.status && response.status >= 400) return false;
-                return true;
-              }
-
-              async testStability(node) {
-                const results = [];
-                for (let i=0;i<HEALTH_CONFIG.REQUIRED_TESTS;i++){
-                  const result = await this.verifyRealConnection(node);
-                  results.push(result);
-                  if (!result.healthy) return { stable:false, attempt:i+1, reason: result.error||'连接失败' };
-                  await new Promise(r=>setTimeout(r,300));
-                }
-                const avgLatency = results.reduce((sum,r)=>sum+r.latency,0)/results.length;
-                return { stable:true, attempts:HEALTH_CONFIG.REQUIRED_TESTS, avgLatency, successRate:1.0 };
-              }
-
-              async checkAllNodes(nodeList) {
-                console.log(`开始健康检查 ${nodeList.length} 个节点...`);
-                const limitedNodes = nodeList.slice(0, MAX_NODES);
-                const healthyNodes=[];
-                for (const node of limitedNodes){
-                  const stabilityTest = await this.testStability(node);
-                  if (stabilityTest.stable){
-                    const finalCheck = await this.verifyRealConnection(node);
-                    if (finalCheck.healthy){
-                      healthyNodes.push({ ...node, latency: finalCheck.latency, avgLatency: stabilityTest.avgLatency, score: this.calculateScore(finalCheck.latency, stabilityTest.avgLatency) });
-                      this.healthyNodes.set(node.id, {...node, health:finalCheck, stability:stabilityTest});
-                      this.stats.successfulChecks++;
-                    } else { this.unhealthyNodes.add(node.id); this.stats.failedChecks++; }
-                  } else { this.unhealthyNodes.add(node.id); this.stats.failedChecks++; }
-                  this.stats.totalChecks++;
-                }
-                const sortedNodes = healthyNodes.sort((a,b)=>b.score-a.score);
-                return { healthy:sortedNodes, stats:{...this.stats, healthRate:(this.stats.successfulChecks/this.stats.totalChecks*100).toFixed(1)+'%'} };
-              }
-
-              calculateScore(currentLatency, avgLatency) {
-                const latencyScore = Math.max(0,100-currentLatency);
-                const stabilityBonus = Math.abs(currentLatency-avgLatency)<20 ? 20 : 0;
-                return latencyScore + stabilityBonus;
-              }
-
-              getBestNode() {
-                let bestNode=null, highestScore=-1;
-                for (const [id,node] of this.healthyNodes){
-                  if (node.health.latency<highestScore || highestScore===-1){ highestScore=node.health.latency; bestNode=node; }
-                }
-                return bestNode;
-              }
-            }
-
-            if (typeof globalThis !== 'undefined') globalThis.BPBHealthChecker = new NodeHealthChecker();
-            console.log('✅ 节点健康检查器已加载 | 限制5节点 | 真连接稳定性检测');
-          })();
-          // ====== 补丁结束 ======
-          EOF
-
-          cat health_patch.js origin.js > origin_patched.js
-          mv origin_patched.js origin.js
-          echo "✅ 节点健康检查补丁注入完成"
-
-      - name: 混淆 BPB worker.js
+      - name: 混淆 worker.js
         run: |
-          javascript-obfuscator origin.js --output _worker.js \
+          javascript-obfuscator build/unobfuscated-worker.js \
+            --output build/worker.obf.js \
             --compact true \
-            --control-flow-flattening false \
-            --dead-code-injection false \
-            --identifier-names-generator mangled \
-            --rename-globals false \
+            --control-flow-flattening true \
+            --dead-code-injection true \
+            --debug-protection false \
+            --disable-console-output true \
+            --identifier-names-generator hexadecimal \
+            --simplify true \
+            --split-strings true \
             --string-array true \
-            --string-array-encoding 'rc4' \
-            --string-array-threshold 0.75 \
-            --transform-object-keys true \
-            --unicode-escape-sequence true \
-            --seed 9527
-          echo "混淆完成，输出文件大小: $(wc -c < _worker.js) 字节"
+            --string-array-encoding rc4 \
+            --string-array-threshold 1
 
-      - name: 提交更改
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          branch: main
-          commit_message: ':arrow_up: 更新最新的 BPB 面板 + 节点健康检查补丁'
-          commit_author: 'github-actions[bot] <github-actions[bot]@users.noreply.github.com>'
-          push_options: '--set-upstream'
+      - name: 提交混淆后的 worker.js
+        run: |
+          git config --local user.email "github-actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git add build/worker.obf.js
+          git commit -m "Auto-obfuscate worker.js"
+          git push || echo "无需推送，可能没有变更"
