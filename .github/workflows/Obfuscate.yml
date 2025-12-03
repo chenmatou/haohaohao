@@ -1,10 +1,11 @@
-name: Build and Deploy BPB Panel
+name: Build and Obfuscate BPB Panel
 
 on:
   push:
     branches:
       - main
   schedule:
+    # 每天凌晨1:00运行
     - cron: "0 1 * * *"
 
 permissions:
@@ -21,252 +22,291 @@ jobs:
       - name: 设置 Node.js 环境
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: "latest"
 
-      - name: 安装依赖工具
+      - name: 安装依赖项
         run: |
-          sudo apt-get update
-          sudo apt-get install -y curl wget unzip git
+          npm install -g javascript-obfuscator
 
-      - name: 克隆完整 BPB 面板仓库
+      - name: 下载 BPB worker.js（使用 Releases 地址）
         run: |
-          echo "正在克隆完整 BPB 面板仓库..."
+          # 主要下载URL - 使用 GitHub Releases
+          PRIMARY_URL="https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/download/v4.0.0/worker.js"
           
-          # 尝试克隆完整仓库
-          if git clone --depth 1 https://github.com/bia-pain-bache/BPB-Worker-Panel.git bpb-full; then
-            echo "✅ 完整仓库克隆成功"
+          # 备用URL列表
+          FALLBACK_URLS=(
+            "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
+            "https://cdn.jsdelivr.net/gh/bia-pain-bache/BPB-Worker-Panel@main/build/unobfuscated-worker.js"
+            "https://ghproxy.com/https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
+          )
+          
+          echo "开始下载BPB worker.js文件..."
+          
+          # 尝试主URL（Releases地址）
+          if wget -O origin.js "$PRIMARY_URL"; then
+            echo "✅ Releases URL下载成功"
+          else
+            echo "Releases URL下载失败，尝试备用URL..."
             
-            # 进入仓库目录
-            cd bpb-full
+            # 尝试备用URL
+            SUCCESS=false
+            for url in "${FALLBACK_URLS[@]}"; do
+              echo "尝试下载: $url"
+              if wget -O origin.js "$url"; then
+                echo "✅ 备用URL下载成功: $url"
+                SUCCESS=true
+                break
+              else
+                echo "❌ 下载失败: $url"
+              fi
+            done
             
-            # 切换到正确版本
-            git checkout v4.0.1 || echo "版本切换失败，使用最新版本"
-            
-            # 检查文件结构
-            echo "📁 仓库结构:"
-            find . -type f -name "*.html" -o -name "*.js" -o -name "*.css" | head -20
-            
-            # 如果有build目录，优先使用
-            if [ -d "build" ]; then
-              echo "✅ 发现 build 目录，复制文件..."
-              cp -r build/* ../ || true
-              cp -r ./*.html ../ 2>/dev/null || true
-              cp -r ./*.css ../ 2>/dev/null || true
-              cp -r ./*.js ../ 2>/dev/null || true
-            else
-              echo "复制所有文件..."
-              cp -r ./* ../ 2>/dev/null || true
+            # 最终检查
+            if [ "$SUCCESS" = false ] || [ ! -f origin.js ] || [ ! -s origin.js ]; then
+              echo "❌ 所有下载源均失败，请检查网络或URL有效性"
+              exit 1
             fi
-            
-            cd ..
-            rm -rf bpb-full
-          else
-            echo "❌ 克隆失败，尝试其他方法..."
           fi
+          
+          echo "下载完成，文件大小: $(wc -c < origin.js) 字节"
 
-      - name: 下载和准备核心文件
+      - name: 注入节点健康检查补丁（真连接+100%稳定性+高延迟筛选）
         run: |
-          echo "准备核心文件..."
+          echo "正在注入节点健康检查补丁..."
           
-          # 确保有 worker.js（这是核心文件）
-          WORKER_URL="https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/download/v4.0.1/worker.js"
+          # 创建健康检查补丁代码
+          cat > health_patch.js << 'EOF'
+          // ====== 节点健康检查补丁 ======
+          // 功能：真连接验证 + 稳定性100% + 高延迟筛选
           
-          if curl -L --connect-timeout 30 "$WORKER_URL" -o worker.js; then
-            echo "✅ worker.js 下载成功"
-          else
-            echo "❌ worker.js 下载失败，创建基本版本..."
-            # 创建基本的 worker.js
-            cat > worker.js << 'EOF'
-            // BPB Worker 占位文件
-            // 这是一个占位文件，实际功能需要完整的BPB面板
-            console.log('BPB Worker 已加载，但需要完整的面板文件');
-            export default {
-              async fetch(request, env, ctx) {
-                return new Response('BPB Worker 正在运行，请确保加载了完整的面板文件', {
-                  headers: { 'Content-Type': 'text/html;charset=utf-8' }
-                });
-              }
+          (function() {
+            'use strict';
+            
+            // 健康检查配置
+            const HEALTH_CONFIG = {
+              STABILITY: 1.0,          // 稳定性要求100%
+              MAX_LATENCY: 150,        // 最大延迟150ms
+              CHECK_TIMEOUT: 5000,     // 检查超时5秒
+              REQUIRED_TESTS: 3        // 每个节点至少测试3次
             };
-            EOF
-          fi
-          
-          # 检查是否已经有 index.html（从仓库克隆的）
-          if [ ! -f "index.html" ] || [ ! -s "index.html" ]; then
-            echo "没有找到有效的 index.html，尝试获取官方版本..."
             
-            # 尝试下载官方的 index.html
-            if curl -L --connect-timeout 30 "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/index.html" -o index.html 2>/dev/null; then
-              echo "✅ 官方 index.html 下载成功"
-            else
-              echo "❌ 官方 index.html 下载失败，创建基本版本..."
-              # 创建一个指向官方面板的重定向页面
-              cat > index.html << 'EOF'
-              <!DOCTYPE html>
-              <html lang="zh-CN">
-              <head>
-                  <meta charset="UTF-8">
-                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                  <title>BPB Worker Panel - 重定向</title>
-                  <meta http-equiv="refresh" content="0; url=https://github.com/bia-pain-bache/BPB-Worker-Panel">
-                  <style>
-                      body {
-                          font-family: Arial, sans-serif;
-                          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                          color: white;
-                          display: flex;
-                          justify-content: center;
-                          align-items: center;
-                          height: 100vh;
-                          margin: 0;
-                      }
-                      .container {
-                          text-align: center;
-                          padding: 40px;
-                          background: rgba(255, 255, 255, 0.1);
-                          border-radius: 15px;
-                          backdrop-filter: blur(10px);
-                          max-width: 600px;
-                      }
-                      h1 {
-                          margin-bottom: 20px;
-                      }
-                      p {
-                          margin: 10px 0;
-                          line-height: 1.6;
-                      }
-                      a {
-                          color: #4CAF50;
-                          text-decoration: none;
-                          font-weight: bold;
-                      }
-                  </style>
-              </head>
-              <body>
-                  <div class="container">
-                      <h1>🚀 BPB Worker Panel v4.0.1</h1>
-                      <p>正在重定向到官方面板...</p>
-                      <p>如果您的浏览器没有自动跳转，请点击 <a href="https://github.com/bia-pain-bache/BPB-Worker-Panel">这里</a></p>
-                      <p>或者手动访问：https://github.com/bia-pain-bache/BPB-Worker-Panel</p>
-                      <p>请注意：完整的 BPB 面板需要从官方仓库获取所有文件。</p>
-                  </div>
-              </body>
-              </html>
-              EOF
-            fi
-          fi
-
-      - name: 检查文件结构
-        run: |
-          echo "📁 当前目录结构:"
-          ls -la
-          
-          echo ""
-          echo "📄 文件类型统计:"
-          echo "HTML 文件: $(find . -maxdepth 1 -name '*.html' | wc -l) 个"
-          echo "JS 文件: $(find . -maxdepth 1 -name '*.js' | wc -l) 个"
-          echo "CSS 文件: $(find . -maxdepth 1 -name '*.css' | wc -l) 个"
-          
-          if [ -f "index.html" ]; then
-            echo ""
-            echo "📊 index.html 预览:"
-            head -20 index.html | grep -E "(title|h1|div|body)" || true
-          fi
-
-      - name: 应用必要的配置补丁
-        run: |
-          echo "应用配置补丁..."
-          
-          # 应用端口补丁（如果文件存在）
-          if [ -f "worker.js" ]; then
-            sed -i 's/:8000/:80/g' worker.js 2>/dev/null || true
-            sed -i 's/port:\s*8000/port: 80/g' worker.js 2>/dev/null || true
-            echo "✅ 80端口配置已应用"
-          fi
-          
-          # 尝试在配置文件中设置最大节点数
-          if [ -f "worker.js" ]; then
-            sed -i 's/MAX_NODE\s*=\s*[0-9]*/MAX_NODE = 5/g' worker.js 2>/dev/null || true
-            sed -i 's/maxNodes\s*=\s*[0-9]*/maxNodes = 5/g' worker.js 2>/dev/null || true
-            echo "✅ 最大节点数限制为5"
-          fi
-
-      - name: 创建说明文件
-        run: |
-          echo "创建说明文件..."
-          
-          cat > README.md << 'EOF'
-          # BPB Worker Panel v4.0.1
-          
-          ## 部署说明
-          
-          这是一个自动部署的 BPB Worker Panel 版本。
-          
-          ### 主要功能
-          
-          - **VLESS - Trojan** 信息管理
-          - **Xray 片段** 配置
-          - **路由规则** 设置
-          - **节点管理**
-          
-          ### 注意事项
-          
-          1. 确保您已经正确配置了 Cloudflare Worker
-          2. 端口默认设置为 80
-          3. 最大节点数限制为 5
-          4. 如果需要完整功能，请确保所有面板文件都已正确部署
-          
-          ### 文件说明
-          
-          - `index.html`: 主面板界面
-          - `worker.js`: Worker 核心逻辑
-          - 其他文件: 面板所需的静态资源
-          
-          ### 更新
-          
-          此面板会自动从官方仓库同步更新。
-          
-          GitHub Actions 每天自动运行，确保您总是使用最新版本。
+            // 节点健康检查器
+            class NodeHealthChecker {
+              constructor() {
+                this.healthyNodes = new Map();
+                this.unhealthyNodes = new Set();
+                this.stats = {
+                  totalChecks: 0,
+                  successfulChecks: 0,
+                  failedChecks: 0
+                };
+              }
+              
+              // 真连接验证
+              async verifyRealConnection(node) {
+                const startTime = Date.now();
+                
+                try {
+                  // 使用fetch API进行真连接测试
+                  const controller = new AbortController();
+                  const timeoutId = setTimeout(() => controller.abort(), HEALTH_CONFIG.CHECK_TIMEOUT);
+                  
+                  const response = await fetch(node.url, {
+                    method: 'HEAD',
+                    mode: 'no-cors',
+                    signal: controller.signal,
+                    headers: {
+                      'User-Agent': 'Mozilla/5.0 (NodeHealthChecker)',
+                      'Cache-Control': 'no-cache'
+                    }
+                  });
+                  
+                  clearTimeout(timeoutId);
+                  const latency = Date.now() - startTime;
+                  
+                  // 验证响应
+                  const isValid = this.validateResponse(response, latency);
+                  
+                  return {
+                    healthy: isValid,
+                    latency: latency,
+                    timestamp: Date.now(),
+                    status: response.status || 0
+                  };
+                } catch (error) {
+                  return {
+                    healthy: false,
+                    latency: null,
+                    timestamp: Date.now(),
+                    error: error.message
+                  };
+                }
+              }
+              
+              // 验证响应
+              validateResponse(response, latency) {
+                // 检查1: 延迟不超过阈值
+                if (latency > HEALTH_CONFIG.MAX_LATENCY) return false;
+                
+                // 检查2: 响应时间合理（不能为0）
+                if (latency < 1) return false;
+                
+                // 检查3: 如果可用，验证状态码
+                if (response.status && response.status >= 400) return false;
+                
+                return true;
+              }
+              
+              // 稳定性测试（100%稳定要求）
+              async testStability(node) {
+                const results = [];
+                
+                for (let i = 0; i < HEALTH_CONFIG.REQUIRED_TESTS; i++) {
+                  const result = await this.verifyRealConnection(node);
+                  results.push(result);
+                  
+                  // 如果任何一次测试失败，节点不稳定
+                  if (!result.healthy) {
+                    return {
+                      stable: false,
+                      attempt: i + 1,
+                      reason: result.error || '连接失败'
+                    };
+                  }
+                  
+                  // 等待一段时间再进行下一次测试
+                  await new Promise(resolve => setTimeout(resolve, 300));
+                }
+                
+                // 计算平均延迟
+                const avgLatency = results.reduce((sum, r) => sum + r.latency, 0) / results.length;
+                
+                return {
+                  stable: true,
+                  attempts: HEALTH_CONFIG.REQUIRED_TESTS,
+                  avgLatency: avgLatency,
+                  successRate: 1.0
+                };
+              }
+              
+              // 批量健康检查
+              async checkAllNodes(nodeList) {
+                console.log(`开始健康检查 ${nodeList.length} 个节点...`);
+                
+                const healthyNodes = [];
+                
+                for (const node of nodeList) {
+                  // 进行稳定性测试
+                  const stabilityTest = await this.testStability(node);
+                  
+                  if (stabilityTest.stable) {
+                    // 稳定性通过，进行最终验证
+                    const finalCheck = await this.verifyRealConnection(node);
+                    
+                    if (finalCheck.healthy) {
+                      healthyNodes.push({
+                        ...node,
+                        latency: finalCheck.latency,
+                        avgLatency: stabilityTest.avgLatency,
+                        score: this.calculateScore(finalCheck.latency, stabilityTest.avgLatency)
+                      });
+                      
+                      this.healthyNodes.set(node.id, {
+                        ...node,
+                        health: finalCheck,
+                        stability: stabilityTest
+                      });
+                      
+                      this.stats.successfulChecks++;
+                    } else {
+                      this.unhealthyNodes.add(node.id);
+                      this.stats.failedChecks++;
+                    }
+                  } else {
+                    this.unhealthyNodes.add(node.id);
+                    this.stats.failedChecks++;
+                  }
+                  
+                  this.stats.totalChecks++;
+                }
+                
+                // 按得分排序（延迟越低得分越高）
+                const sortedNodes = healthyNodes.sort((a, b) => b.score - a.score);
+                
+                return {
+                  healthy: sortedNodes,
+                  stats: {
+                    ...this.stats,
+                    healthRate: (this.stats.successfulChecks / this.stats.totalChecks * 100).toFixed(1) + '%'
+                  }
+                };
+              }
+              
+              // 计算节点得分
+              calculateScore(currentLatency, avgLatency) {
+                // 基础得分基于延迟
+                const latencyScore = Math.max(0, 100 - currentLatency);
+                
+                // 稳定性奖励
+                const stabilityBonus = Math.abs(currentLatency - avgLatency) < 20 ? 20 : 0;
+                
+                return latencyScore + stabilityBonus;
+              }
+              
+              // 获取最佳节点
+              getBestNode() {
+                let bestNode = null;
+                let highestScore = -1;
+                
+                for (const [id, node] of this.healthyNodes) {
+                  if (node.health.latency < highestScore || highestScore === -1) {
+                    highestScore = node.health.latency;
+                    bestNode = node;
+                  }
+                }
+                
+                return bestNode;
+              }
+            }
+            
+            // 创建全局健康检查器
+            if (typeof globalThis !== 'undefined') {
+              globalThis.BPBHealthChecker = new NodeHealthChecker();
+            }
+            
+            console.log('✅ 节点健康检查器已加载');
+            console.log('📊 配置: 真连接验证 | 100%稳定性 | 延迟筛选(<150ms)');
+          })();
+          // ====== 补丁结束 ======
           EOF
           
-          echo "✅ README.md 已创建"
+          # 将补丁代码注入到原文件开头
+          cat health_patch.js origin.js > origin_patched.js
+          mv origin_patched.js origin.js
+          
+          echo "✅ 节点健康检查补丁注入完成"
+          echo "补丁大小: $(wc -l < health_patch.js) 行"
+
+      - name: 混淆 BPB worker.js
+        run: |
+          javascript-obfuscator origin.js --output _worker.js \
+            --compact true \
+            --control-flow-flattening false \
+            --dead-code-injection false \
+            --identifier-names-generator mangled \
+            --rename-globals false \
+            --string-array true \
+            --string-array-encoding 'rc4' \
+            --string-array-threshold 0.75 \
+            --transform-object-keys true \
+            --unicode-escape-sequence true
+          
+          echo "混淆完成，输出文件大小: $(wc -c < _worker.js) 字节"
 
       - name: 提交更改
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          
-          # 添加所有文件
-          git add .
-          
-          # 检查是否有变更
-          if git diff --cached --quiet; then
-            echo "没有变更需要提交"
-          else
-            git commit -m "🚀 自动部署 BPB Worker Panel v4.0.1 - $(date '+%Y-%m-%d %H:%M:%S')"
-            
-            # 尝试推送
-            if git push; then
-              echo "✅ 提交成功"
-            else
-              echo "⚠️  推送失败，可能是没有变更或权限问题"
-            fi
-          fi
-
-      - name: 验证部署
-        run: |
-          echo "🎉 BPB 面板部署流程完成!"
-          echo ""
-          echo "📊 部署统计:"
-          echo "• 已部署文件: $(ls -la | wc -l) 个"
-          echo "• 核心文件: worker.js"
-          echo "• 主界面: index.html"
-          echo ""
-          echo "🔗 访问地址:"
-          echo "https://[您的用户名].github.io/[仓库名]/"
-          echo ""
-          echo "⚠️  重要提示:"
-          echo "1. 确保在 GitHub 仓库设置中启用 GitHub Pages"
-          echo "2. 如果面板不完整，请访问官方仓库获取完整文件:"
-          echo "   https://github.com/bia-pain-bache/BPB-Worker-Panel"
-          echo ""
-          echo "✅ 流程结束"
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          branch: main
+          commit_message: ':arrow_up: 更新最新的 BPB 面板 + 节点健康检查补丁'
+          commit_author: 'github-actions[bot] <github-actions[bot]@users.noreply.github.com>'
+          push_options: '--set-upstream'
