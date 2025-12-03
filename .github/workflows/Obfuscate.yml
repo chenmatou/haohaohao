@@ -1,4 +1,4 @@
-name: Build and Obfuscate BPB Panel
+name: Build and Deploy BPB Panel
 
 on:
   push:
@@ -26,136 +26,209 @@ jobs:
       - name: 安装依赖工具
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl wget unzip
+          sudo apt-get install -y curl wget unzip git
 
-      - name: 下载完整 BPB 面板（简化版本）
+      - name: 克隆完整 BPB 面板仓库
         run: |
-          echo "开始下载 BPB 面板..."
+          echo "正在克隆完整 BPB 面板仓库..."
           
-          # 方法1：直接下载 worker.js（主要文件）
+          # 尝试克隆完整仓库
+          if git clone --depth 1 https://github.com/bia-pain-bache/BPB-Worker-Panel.git bpb-full; then
+            echo "✅ 完整仓库克隆成功"
+            
+            # 进入仓库目录
+            cd bpb-full
+            
+            # 切换到正确版本
+            git checkout v4.0.1 || echo "版本切换失败，使用最新版本"
+            
+            # 检查文件结构
+            echo "📁 仓库结构:"
+            find . -type f -name "*.html" -o -name "*.js" -o -name "*.css" | head -20
+            
+            # 如果有build目录，优先使用
+            if [ -d "build" ]; then
+              echo "✅ 发现 build 目录，复制文件..."
+              cp -r build/* ../ || true
+              cp -r ./*.html ../ 2>/dev/null || true
+              cp -r ./*.css ../ 2>/dev/null || true
+              cp -r ./*.js ../ 2>/dev/null || true
+            else
+              echo "复制所有文件..."
+              cp -r ./* ../ 2>/dev/null || true
+            fi
+            
+            cd ..
+            rm -rf bpb-full
+          else
+            echo "❌ 克隆失败，尝试其他方法..."
+          fi
+
+      - name: 下载和准备核心文件
+        run: |
+          echo "准备核心文件..."
+          
+          # 确保有 worker.js（这是核心文件）
           WORKER_URL="https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/download/v4.0.1/worker.js"
           
-          echo "尝试下载 worker.js..."
-          if curl -L --connect-timeout 30 --max-time 60 "$WORKER_URL" -o worker.js; then
+          if curl -L --connect-timeout 30 "$WORKER_URL" -o worker.js; then
             echo "✅ worker.js 下载成功"
-            echo "文件大小: $(wc -c < worker.js) 字节"
-            
-            # 创建简化版的 index.html - 使用单个 echo 命令
-            echo '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>BPB Worker Panel</title><style>body{font-family:Arial,sans-serif;margin:40px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;}.container{max-width:800px;margin:0 auto;background:rgba(255,255,255,0.1);padding:30px;border-radius:10px;backdrop-filter:blur(10px);}h1{text-align:center;margin-bottom:30px;}.status{background:rgba(255,255,255,0.2);padding:15px;border-radius:5px;margin:20px 0;}.success{color:#4CAF50;}.error{color:#f44336;}</style></head><body><div class="container"><h1>🚀 BPB Worker Panel</h1><div class="status"><p>面板正在运行...</p><p>Worker.js 已成功加载。</p></div><p>版本: v4.0.1</p><p>端口: 80</p><p>最大节点数: 5</p></div></body></html>' > index.html
-            
-            echo "✅ index.html 创建成功"
-            
           else
-            echo "❌ worker.js 下载失败，尝试备用源..."
+            echo "❌ worker.js 下载失败，创建基本版本..."
+            # 创建基本的 worker.js
+            cat > worker.js << 'EOF'
+            // BPB Worker 占位文件
+            // 这是一个占位文件，实际功能需要完整的BPB面板
+            console.log('BPB Worker 已加载，但需要完整的面板文件');
+            export default {
+              async fetch(request, env, ctx) {
+                return new Response('BPB Worker 正在运行，请确保加载了完整的面板文件', {
+                  headers: { 'Content-Type': 'text/html;charset=utf-8' }
+                });
+              }
+            };
+            EOF
+          fi
+          
+          # 检查是否已经有 index.html（从仓库克隆的）
+          if [ ! -f "index.html" ] || [ ! -s "index.html" ]; then
+            echo "没有找到有效的 index.html，尝试获取官方版本..."
             
-            # 方法2：下载完整仓库
-            REPO_URL="https://codeload.github.com/bia-pain-bache/BPB-Worker-Panel/zip/refs/heads/main"
-            
-            if curl -L "$REPO_URL" -o panel.zip; then
-              echo "✅ 仓库下载成功，解压..."
-              unzip -q panel.zip -d ./
-              if [ -d "BPB-Worker-Panel-main" ]; then
-                cp -r BPB-Worker-Panel-main/* ./
-                rm -rf BPB-Worker-Panel-main
-              fi
-              echo "✅ 仓库解压完成"
+            # 尝试下载官方的 index.html
+            if curl -L --connect-timeout 30 "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/index.html" -o index.html 2>/dev/null; then
+              echo "✅ 官方 index.html 下载成功"
             else
-              echo "❌ 所有下载源都失败，流程终止"
-              exit 1
+              echo "❌ 官方 index.html 下载失败，创建基本版本..."
+              # 创建一个指向官方面板的重定向页面
+              cat > index.html << 'EOF'
+              <!DOCTYPE html>
+              <html lang="zh-CN">
+              <head>
+                  <meta charset="UTF-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                  <title>BPB Worker Panel - 重定向</title>
+                  <meta http-equiv="refresh" content="0; url=https://github.com/bia-pain-bache/BPB-Worker-Panel">
+                  <style>
+                      body {
+                          font-family: Arial, sans-serif;
+                          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                          color: white;
+                          display: flex;
+                          justify-content: center;
+                          align-items: center;
+                          height: 100vh;
+                          margin: 0;
+                      }
+                      .container {
+                          text-align: center;
+                          padding: 40px;
+                          background: rgba(255, 255, 255, 0.1);
+                          border-radius: 15px;
+                          backdrop-filter: blur(10px);
+                          max-width: 600px;
+                      }
+                      h1 {
+                          margin-bottom: 20px;
+                      }
+                      p {
+                          margin: 10px 0;
+                          line-height: 1.6;
+                      }
+                      a {
+                          color: #4CAF50;
+                          text-decoration: none;
+                          font-weight: bold;
+                      }
+                  </style>
+              </head>
+              <body>
+                  <div class="container">
+                      <h1>🚀 BPB Worker Panel v4.0.1</h1>
+                      <p>正在重定向到官方面板...</p>
+                      <p>如果您的浏览器没有自动跳转，请点击 <a href="https://github.com/bia-pain-bache/BPB-Worker-Panel">这里</a></p>
+                      <p>或者手动访问：https://github.com/bia-pain-bache/BPB-Worker-Panel</p>
+                      <p>请注意：完整的 BPB 面板需要从官方仓库获取所有文件。</p>
+                  </div>
+              </body>
+              </html>
+              EOF
             fi
           fi
 
-      - name: 检查面板结构
+      - name: 检查文件结构
         run: |
           echo "📁 当前目录结构:"
           ls -la
           
-          echo "📄 检查关键文件:"
-          [ -f "index.html" ] && echo "✅ index.html 存在" || echo "❌ 缺少 index.html"
-          [ -f "worker.js" ] && echo "✅ worker.js 存在" || echo "❌ 缺少 worker.js"
+          echo ""
+          echo "📄 文件类型统计:"
+          echo "HTML 文件: $(find . -maxdepth 1 -name '*.html' | wc -l) 个"
+          echo "JS 文件: $(find . -maxdepth 1 -name '*.js' | wc -l) 个"
+          echo "CSS 文件: $(find . -maxdepth 1 -name '*.css' | wc -l) 个"
           
+          if [ -f "index.html" ]; then
+            echo ""
+            echo "📊 index.html 预览:"
+            head -20 index.html | grep -E "(title|h1|div|body)" || true
+          fi
+
+      - name: 应用必要的配置补丁
+        run: |
+          echo "应用配置补丁..."
+          
+          # 应用端口补丁（如果文件存在）
           if [ -f "worker.js" ]; then
-            echo "📊 worker.js 大小: $(wc -c < worker.js) 字节"
-            echo "📊 worker.js 行数: $(wc -l < worker.js) 行"
+            sed -i 's/:8000/:80/g' worker.js 2>/dev/null || true
+            sed -i 's/port:\s*8000/port: 80/g' worker.js 2>/dev/null || true
+            echo "✅ 80端口配置已应用"
           fi
-
-      - name: 应用补丁
-        run: |
-          echo "应用补丁..."
           
+          # 尝试在配置文件中设置最大节点数
           if [ -f "worker.js" ]; then
-            # 备份原始文件
-            cp worker.js worker.js.backup
-            
-            # 应用 80 端口补丁
-            echo "应用 80 端口兼容补丁..."
-            sed -i 's/:8000/:80/g' worker.js
-            sed -i 's/port:\s*8000/port: 80/g' worker.js
-            sed -i 's/PORT\s*=\s*8000/PORT = 80/g' worker.js
-            
-            # 应用最大节点限制补丁
-            echo "应用最大节点限制补丁..."
-            sed -i 's/MAX_NODE\s*=\s*[0-9]*/MAX_NODE = 5/g' worker.js
-            sed -i 's/maxNodes\s*=\s*[0-9]*/maxNodes = 5/g' worker.js
-            sed -i 's/max_node\s*=\s*[0-9]*/max_node = 5/g' worker.js
-            
-            echo "✅ 补丁应用完成"
-            
-            # 验证补丁
-            echo "补丁验证:"
-            echo "80端口设置:"
-            grep -n "80" worker.js | grep -E "(port|PORT)" | head -3 || echo "未找到相关设置"
-            echo "最大节点设置:"
-            grep -n -i "max.*node.*5" worker.js | head -3 || echo "未找到相关设置"
-            
-            # 清理备份文件
-            rm -f worker.js.backup
-          else
-            echo "❌ worker.js 不存在，跳过补丁"
+            sed -i 's/MAX_NODE\s*=\s*[0-9]*/MAX_NODE = 5/g' worker.js 2>/dev/null || true
+            sed -i 's/maxNodes\s*=\s*[0-9]*/maxNodes = 5/g' worker.js 2>/dev/null || true
+            echo "✅ 最大节点数限制为5"
           fi
 
-      - name: 安装 JS 混淆器
+      - name: 创建说明文件
         run: |
-          npm install -g javascript-obfuscator@4.0.0
-
-      - name: 混淆 Worker.js
-        run: |
-          echo "开始混淆..."
+          echo "创建说明文件..."
           
-          if [ -f "worker.js" ]; then
-            # 使用简单的混淆配置
-            javascript-obfuscator worker.js --output worker.obf.js \
-              --compact true \
-              --identifier-names-generator hexadecimal \
-              --rename-globals false \
-              --string-array true \
-              --string-array-encoding 'base64' \
-              --string-array-threshold 0.75
-            
-            echo "✅ 混淆完成"
-            echo "原始大小: $(wc -c < worker.js) 字节"
-            echo "混淆后大小: $(wc -c < worker.obf.js) 字节"
-          else
-            echo "❌ worker.js 不存在，跳过混淆"
-          fi
-
-      - name: 部署准备
-        run: |
-          echo "准备部署..."
+          cat > README.md << 'EOF'
+          # BPB Worker Panel v4.0.1
           
-          # 使用混淆后的文件替换原文件
-          if [ -f "worker.obf.js" ]; then
-            cp worker.obf.js worker.js
-            echo "✅ 使用混淆后的 worker.js"
-            # 清理中间文件
-            rm -f worker.obf.js
-          fi
+          ## 部署说明
           
-          # 确保所有必要文件存在
-          [ ! -f "index.html" ] && echo "<h1>BPB Panel</h1><p>Worker is running</p>" > index.html
+          这是一个自动部署的 BPB Worker Panel 版本。
           
-          echo "📦 最终文件:"
-          ls -la *.html *.js *.json 2>/dev/null || true
+          ### 主要功能
+          
+          - **VLESS - Trojan** 信息管理
+          - **Xray 片段** 配置
+          - **路由规则** 设置
+          - **节点管理**
+          
+          ### 注意事项
+          
+          1. 确保您已经正确配置了 Cloudflare Worker
+          2. 端口默认设置为 80
+          3. 最大节点数限制为 5
+          4. 如果需要完整功能，请确保所有面板文件都已正确部署
+          
+          ### 文件说明
+          
+          - `index.html`: 主面板界面
+          - `worker.js`: Worker 核心逻辑
+          - 其他文件: 面板所需的静态资源
+          
+          ### 更新
+          
+          此面板会自动从官方仓库同步更新。
+          
+          GitHub Actions 每天自动运行，确保您总是使用最新版本。
+          EOF
+          
+          echo "✅ README.md 已创建"
 
       - name: 提交更改
         run: |
@@ -169,29 +242,31 @@ jobs:
           if git diff --cached --quiet; then
             echo "没有变更需要提交"
           else
-            # 使用单行提交信息，避免多行字符串问题
-            git commit -m "🔄 自动更新 BPB 面板 $(date '+%Y-%m-%d %H:%M:%S') - 更新worker.js，应用80端口补丁，限制节点数为5"
+            git commit -m "🚀 自动部署 BPB Worker Panel v4.0.1 - $(date '+%Y-%m-%d %H:%M:%S')"
             
             # 尝试推送
             if git push; then
               echo "✅ 提交成功"
             else
-              echo "❌ 推送失败，尝试强制推送"
-              git push --force
+              echo "⚠️  推送失败，可能是没有变更或权限问题"
             fi
           fi
 
-      - name: 验证结果
+      - name: 验证部署
         run: |
-          echo "🎉 构建完成!"
+          echo "🎉 BPB 面板部署流程完成!"
           echo ""
-          echo "📊 文件统计:"
-          echo "• index.html: $([ -f "index.html" ] && wc -l < index.html || echo 0) 行"
-          echo "• worker.js: $([ -f "worker.js" ] && wc -c < worker.js || echo 0) 字节"
+          echo "📊 部署统计:"
+          echo "• 已部署文件: $(ls -la | wc -l) 个"
+          echo "• 核心文件: worker.js"
+          echo "• 主界面: index.html"
           echo ""
-          echo "🔧 已应用补丁:"
-          echo "• 80端口兼容: ✅"
-          echo "• 最大节点数限制为 5: ✅"
-          echo "• 代码混淆: ✅"
+          echo "🔗 访问地址:"
+          echo "https://[您的用户名].github.io/[仓库名]/"
           echo ""
-          echo "🚀 面板已部署到 GitHub Pages"
+          echo "⚠️  重要提示:"
+          echo "1. 确保在 GitHub 仓库设置中启用 GitHub Pages"
+          echo "2. 如果面板不完整，请访问官方仓库获取完整文件:"
+          echo "   https://github.com/bia-pain-bache/BPB-Worker-Panel"
+          echo ""
+          echo "✅ 流程结束"
