@@ -1,0 +1,89 @@
+name: Build and Obfuscate BPB Panel
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "0 1 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js 环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: 安装依赖工具 (curl, sed)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+
+      - name: 下载 BPB Worker.js (多源容错)
+        run: |
+          echo "开始下载 worker.js..."
+          URLS=(
+            "https://github.com/bia-pain-bache/BPB-Worker-Panel/releases/download/v4.0.1/worker.js"
+            "https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
+            "https://cdn.jsdelivr.net/gh/bia-pain-bache/BPB-Worker-Panel@main/build/unobfuscated-worker.js"
+            "https://ghproxy.com/https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
+          )
+
+          success=0
+          for u in "${URLS[@]}"; do
+            echo "尝试下载: $u"
+            if curl -L --connect-timeout 10 --max-time 20 "$u" -o worker.js; then
+              echo "✔ 下载成功: $u"
+              success=1
+              break
+            else
+              echo "✘ 下载失败: $u"
+            fi
+          done
+
+          if [ "$success" -ne 1 ]; then
+            echo "❌ 所有下载源都失败，流程终止"
+            exit 1
+          fi
+
+      - name: 应用补丁（80端口兼容 + 限制最大节点数为5）
+        run: |
+          echo "应用补丁中..."
+
+          # 80 端口兼容补丁
+          sed -i 's/8000/80/g' worker.js
+
+          # 限制最大节点 MAX_NODE = 5
+          sed -i 's/const MAX_NODE = .*/const MAX_NODE = 5;/' worker.js
+
+          echo "补丁应用完成"
+
+      - name: 安装 JS 混淆器（兼容 Node18 的稳定版）
+        run: |
+          npm install -g javascript-obfuscator@4.0.0
+
+      - name: 混淆 Worker.js
+        run: |
+          echo "开始混淆..."
+          javascript-obfuscator worker.js --output worker.obf.js
+          echo "✔ 混淆完成"
+
+      - name: 提交并推送混淆文件
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          cp worker.obf.js worker.js
+
+          git add worker.js worker.obf.js
+          git commit -m "Auto-obfuscated worker.js (CI)"
+          git push
